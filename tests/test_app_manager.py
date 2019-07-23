@@ -43,3 +43,17 @@ def test_parse(app_manager):
     fields = {'params', 'request', 'dialogue_state', 'directives', 'history'}
     for field in fields:
         assert field in vars(response).keys()
+
+
+def test_app_storage(app_manager):
+    assert len(app_manager) == 0  # should be empty to start
+    assert app_manager  # truthy even when empty
+    assert 'foo' not in app_manager
+    app_manager['foo'] = 'bar'  # setting a value
+    assert 'foo' in app_manager
+    assert app_manager['foo'] is 'bar'  # value is present
+    assert len(app_manager) == 1
+    del app_manager['foo']
+    assert 'foo' not in app_manager
+    with pytest.raises(KeyError):
+        app_manager['foo']

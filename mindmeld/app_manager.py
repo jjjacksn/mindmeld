@@ -14,6 +14,7 @@
 """
 This module contains the application manager
 """
+import collections.abc
 import logging
 
 from .components.request import Request, Params, FrozenParams
@@ -49,6 +50,33 @@ def freeze_params(params):
     return params
 
 
+class DialogueApp(collections.abc.Mapping):
+    """A limited version of the application manager which can be passed
+    into dialogue state handlers to expose access to application storage
+    and the natural language processor.
+    """
+
+    def __init__(self, app_manager):
+        self._app_manager = app_manager
+
+    @property
+    def nlp(self):
+        return self._app_manager.nlp
+
+    @property
+    def question_answerer(self):
+        return self._app_manager.question_answerer
+
+    def __getitem__(self, key):
+        return self._app_manager[key]
+
+    def __iter__(self):
+        return iter(self._app_manager)
+
+    def __len__(self):
+        return len(self._app_manager)
+
+
 class ApplicationManager:
     """The Application Manager is the core orchestrator of the MindMeld platform. It receives \
     a client request, and processes that request by passing it through all the necessary \
@@ -68,9 +96,20 @@ class ApplicationManager:
     MAX_HISTORY_LEN = 100
     """The max number of turns in history."""
 
-    def __init__(self, app_path, nlp=None, question_answerer=None, es_host=None,
-                 request_class=None, responder_class=None, preprocessor=None, async_mode=False):
+    def __init__(
+        self,
+        app_path,
+        nlp=None,
+        question_answerer=None,
+        es_host=None,
+        request_class=None,
+        responder_class=None,
+        preprocessor=None,
+        async_mode=False,
+        storage=None,
+     ):
         self.async_mode = async_mode
+        self._storage = storage or dict()
 
         self._app_path = app_path
         # If NLP or QA were passed in, use the resource loader from there
@@ -121,10 +160,10 @@ class ApplicationManager:
                                      params=params, **processed_query)
 
         # We reset the current turn's responder's params
-        response = self.responder_class(frame=frame, params=Params(),
-                                        slots={}, history=history, request=request,
-                                        directives=[])
-        return request, response
+        responder = self.responder_class(frame=frame, params=Params(),
+                                         slots={}, history=history, request=request,
+                                         directives=[])
+        return request, responder
 
     def parse(self, text, params=None, context=None, frame=None, history=None, verbose=False):
         """
@@ -166,13 +205,19 @@ class ApplicationManager:
         allowed_intents, nlp_params, dm_params = self._pre_nlp(params, verbose)
         processed_query = self.nlp.process(query_text=text, allowed_intents=allowed_intents,
                                            **nlp_params)
-        request, response = self._pre_dm(processed_query=processed_query,
-                                         context=context, history=history,
-                                         frame=frame, params=params)
+        dm_request, responder = self._pre_dm(
+            processed_query=processed_query,
+            context=context,
+            history=history,
+            frame=frame,
+            params=params
+        )
 
-        dm_response = self.dialogue_manager.apply_handler(request, response, **dm_params)
-        response = self._post_dm(request, dm_response)
-        return response
+        responder = self.dialogue_manager.apply_handler(
+            dm_request, responder, **dm_params, app=DialogueApp(self)
+        )
+        responder = self._post_dm(dm_request, responder)
+        return responder
 
     async def _parse_async(self, text, params=None, context=None, frame=None,
                            history=None, verbose=False):
@@ -209,17 +254,23 @@ class ApplicationManager:
 
         allowed_intents, nlp_params, dm_params = self._pre_nlp(params, verbose)
         # TODO: make an async nlp
-        processed_query = self.nlp.process(query_text=text,
-                                           allowed_intents=allowed_intents,
-                                           **nlp_params)
-        request, response = self._pre_dm(processed_query=processed_query,
-                                         context=context, history=history,
-                                         frame=frame, params=params)
+        processed_query = self.nlp.process(
+            query_text=text, allowed_intents=allowed_intents, **nlp_params
+        )
+        dm_request, responder = self._pre_dm(
+            processed_query=processed_query,
+            context=context,
+            history=history,
+            frame=frame,
+            params=params,
+        )
 
-        dm_response = await self.dialogue_manager.apply_handler(request, response, **dm_params)
-        response = self._post_dm(request, dm_response)
+        responder = await self.dialogue_manager.apply_handler(
+            dm_request, responder, app=DialogueApp(self), **dm_params
+        )
+        responder = self._post_dm(dm_request, responder)
 
-        return response
+        return responder
 
     def _pre_nlp(self, params, verbose=False):
         # validate params
@@ -260,3 +311,21 @@ class ApplicationManager:
             kwargs (dict): A list of options which specify the dialogue rule
         """
         self.dialogue_manager.add_dialogue_rule(name, handler, **kwargs)
+
+    def __getitem__(self, key):
+        return self._storage[key]
+
+    def __setitem__(self, key, value):
+        self._storage[key] = value
+
+    def __delitem__(self, key):
+        del self._storage[key]
+
+    def __iter__(self):
+        return iter(self._storage)
+
+    def __len__(self):
+        return len(self._storage)
+
+    def __bool__(self):
+        return True

@@ -14,6 +14,7 @@
 """
 This module contains the app component.
 """
+import collections.abc
 import logging
 import os
 import sys
@@ -27,7 +28,7 @@ from .components.request import Request
 logger = logging.getLogger(__name__)
 
 
-class Application:
+class Application(collections.abc.MutableMapping):
     """The conversational application.
 
         Attributes:
@@ -54,6 +55,7 @@ class Application:
         self._server = None
         self._dialogue_rules = []
         self._middleware = []
+        self._storage = {}
         self.request_class = request_class or Request
         self.responder_class = responder_class or DialogueResponder
         self.preprocessor = preprocessor
@@ -76,7 +78,10 @@ class Application:
         self.app_manager = ApplicationManager(
             self.app_path, nlp, responder_class=self.responder_class,
             request_class=self.request_class, preprocessor=self.preprocessor,
-            async_mode=self.async_mode)
+            async_mode=self.async_mode, storage=self._storage
+        )
+        self._storage = None
+
         self._server = MindMeldServer(self.app_manager)
 
         # Add any pending dialogue rules
@@ -164,3 +169,26 @@ class Application:
         """Initialize the application's command line interface."""
         # pylint: disable=unexpected-keyword-arg,no-value-for-parameter
         app_cli(obj={'app': self})
+
+    def __getitem__(self, key):
+        storage = self.app_manager if self.app_manager else self._storage
+        return storage[key]
+
+    def __setitem__(self, key, value):
+        storage = self.app_manager if self.app_manager else self._storage
+        storage[key] = value
+
+    def __delitem__(self, key):
+        storage = self.app_manager if self.app_manager else self._storage
+        del storage[key]
+
+    def __iter__(self):
+        storage = self.app_manager if self.app_manager else self._storage
+        return iter(storage)
+
+    def __len__(self):
+        storage = self.app_manager if self.app_manager else self._storage
+        return len(storage)
+
+    def __bool__(self):
+        return True
