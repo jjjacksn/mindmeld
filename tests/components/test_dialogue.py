@@ -11,6 +11,7 @@ These tests apply regardless of async/await support.
 """
 # pylint: disable=locally-disabled,redefined-outer-name
 import pytest
+from unittest.mock import MagicMock
 
 from mindmeld.components import Conversation, DialogueManager, DialogueResponder
 from mindmeld.components.request import Request, Params
@@ -26,27 +27,6 @@ def create_request(domain, intent, entities=None):
 def create_responder(request):
     """Creates a response object for use by the dialogue manager"""
     return DialogueResponder(request=request)
-
-
-@pytest.fixture
-def dm():
-    dm = DialogueManager()
-    dm.add_dialogue_rule('domain', lambda x, y: None, domain='domain')
-    dm.add_dialogue_rule('intent', lambda x, y: None, intent='intent')
-    dm.add_dialogue_rule('domain_intent', lambda x, y: None,
-                         domain='domain', intent='intent')
-    dm.add_dialogue_rule('intent_entity_1', lambda x, y: None,
-                         intent='intent', has_entity='entity_1')
-    dm.add_dialogue_rule('intent_entity_2', lambda x, y: None,
-                         intent='intent', has_entity='entity_2')
-    dm.add_dialogue_rule('intent_entities', lambda x, y: None,
-                         intent='intent', has_entities=('entity_1', 'entity_2', 'entity_3'))
-
-    dm.add_dialogue_rule('targeted_only', lambda x, y: None, targeted_only=True)
-    dm.add_dialogue_rule('dummy_ruleless', lambda x, y: None)  # Defined to test default use
-    dm.add_dialogue_rule('default', lambda x, y: None, default=True)
-
-    return dm
 
 
 def test_dialogue_state_rule_equal():
@@ -122,8 +102,8 @@ class TestDialogueManager:
         """Default dialogue state when no rules match
            This will select the rule with default=True"""
         request = create_request('other', 'other')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'default'
 
     def test_default_uniqueness(self, dm):
@@ -138,58 +118,58 @@ class TestDialogueManager:
     def test_domain(self, dm):
         """Correct dialogue state is found for a domain"""
         request = create_request('domain', 'other')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'domain'
 
     def test_domain_intent(self, dm):
         """Correct state should be found for domain and intent"""
         request = create_request('domain', 'intent')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'domain_intent'
 
     def test_intent(self, dm):
         """Correct state should be found for intent"""
         request = create_request('other', 'intent')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'intent'
 
     def test_intent_entity(self, dm):
         """Correctly match intent and entity"""
         request = create_request('domain', 'intent', [{'type': 'entity_2'}])
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'intent_entity_2'
 
     def test_intent_entity_tiebreak(self, dm):
         """Correctly break ties between rules of equal complexity"""
         request = create_request('domain', 'intent', [{'type': 'entity_1'}, {'type': 'entity_2'}])
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'intent_entity_1'
 
     def test_intent_entities(self, dm):
         """Correctly break ties between rules of equal complexity"""
         request = create_request('domain', 'intent', [{'type': 'entity_1'}, {'type': 'entity_2'},
                                                       {'type': 'entity_3'}])
-        response = create_responder(request)
-        result = dm.apply_handler(request, response)
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'intent_entities'
 
     def test_target_dialogue_state_management(self, dm):
         """Correctly sets the dialogue state based on the target_dialogue_state"""
         request = create_request('domain', 'intent')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response, target_dialogue_state='intent_entity_2')
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder, target_dialogue_state='intent_entity_2')
         assert result.dialogue_state == 'intent_entity_2'
 
     def test_target_dialogue_state_management_targeted_only(self, dm):
         """Correctly sets the dialogue state based on the target_dialogue_state"""
         request = create_request('domain', 'intent')
-        response = create_responder(request)
-        result = dm.apply_handler(request, response, target_dialogue_state='targeted_only')
+        responder = create_responder(request)
+        result = dm.apply_handler(request, responder, target_dialogue_state='targeted_only')
         assert result.dialogue_state == 'targeted_only'
 
     def test_targeted_only_kwarg_exclusion(self, dm):
@@ -210,9 +190,9 @@ class TestDialogueManager:
         dm.add_dialogue_rule('middleware_test', _handler, intent='middle')
 
         request = create_request('domain', 'middle')
-        response = create_responder(request)
+        responder = create_responder(request)
 
-        result = dm.apply_handler(request, response)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'middleware_test'
 
     def test_middleware_multiple(self, dm):
@@ -234,10 +214,57 @@ class TestDialogueManager:
         dm.add_dialogue_rule('middleware_test', _handler, intent='middle')
 
         request = create_request('domain', 'middle')
-        response = create_responder(request)
+        responder = create_responder(request)
 
-        result = dm.apply_handler(request, response)
+        result = dm.apply_handler(request, responder)
         assert result.dialogue_state == 'middleware_test'
+
+    def test_passing_app(self, dm):
+
+        app_received = None
+        def _no_app(request, responder):
+            responder.act('no_app')
+
+        def _app_pos(request, responder, app):
+            nonlocal app_received
+            app_received = app
+            responder.act('app_pos')
+
+        def _app_kw(request, responder, *, app):
+            nonlocal app_received
+            app_received = app
+            responder.act('app_kw')
+
+        def _var_kw(request, responder, **kwargs):
+            nonlocal app_received
+            app_received = app
+            responder.act('var_kw')
+
+        handlers = {
+            'no_app': _no_app,
+            'app_pos': _app_pos,
+            'app_kw': _app_kw,
+            'var_kw': _var_kw,
+        }
+
+        for name in handlers:
+            dm.add_dialogue_rule(name, handlers[name], intent=name)
+
+        for name in handlers:
+            request = create_request('domain', name)
+            responder = create_responder(request)
+            app = MagicMock(name=f'{name}_mock_app')
+            result = dm.apply_handler(request, responder, app=app)
+
+            if name is 'no_app':
+                assert app_received is None
+            else:
+                assert app_received is not None
+
+            assert len(result.directives) == 1
+            assert result.directives[0]['name'] is name
+            # reset app received
+            app_received = None
 
 
 def test_convo_params_are_cleared(kwik_e_mart_nlp, kwik_e_mart_app_path):

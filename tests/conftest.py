@@ -14,7 +14,7 @@ import warnings
 
 import pytest
 
-from mindmeld.components import NaturalLanguageProcessor, Preprocessor
+from mindmeld.components import DialogueManager, NaturalLanguageProcessor, Preprocessor
 from mindmeld.query_factory import QueryFactory
 from mindmeld.resource_loader import ResourceLoader
 from mindmeld.tokenizer import Tokenizer
@@ -167,3 +167,26 @@ class FakeApp:
 @pytest.fixture
 def fake_app():
     return FakeApp('123')
+
+
+@pytest.fixture
+def dm():
+    dm = DialogueManager()
+    dm.add_dialogue_rule('domain', lambda x, y: None, domain='domain')
+    dm.add_dialogue_rule('intent', lambda x, y: None, intent='intent')
+    dm.add_dialogue_rule('domain_intent', lambda x, y: None,
+                         domain='domain', intent='intent')
+    dm.add_dialogue_rule('intent_entity_1', lambda x, y: None,
+                         intent='intent', has_entity='entity_1')
+    dm.add_dialogue_rule('intent_entity_2', lambda x, y: None,
+                         intent='intent', has_entity='entity_2')
+    dm.add_dialogue_rule('intent_entities', lambda x, y: None,
+                         intent='intent', has_entities=('entity_1', 'entity_2', 'entity_3'))
+
+    dm.add_dialogue_rule('targeted_only', lambda x, y: None, targeted_only=True)
+    dm.add_dialogue_rule('dummy_ruleless', lambda x, y: None)  # Defined to test default use
+    dm.add_dialogue_rule('default', lambda x, y: None, default=True)
+
+    return dm
+
+

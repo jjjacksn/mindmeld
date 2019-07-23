@@ -11,6 +11,7 @@ These tests apply only when async/await are supported.
 """
 # pylint: disable=locally-disabled,redefined-outer-name
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 from mindmeld.components import Conversation, DialogueManager
@@ -204,6 +205,54 @@ class TestDialogueManager:
         ctx = create_request('domain', 'middle')
         result = await dm.apply_handler(ctx, create_responder(ctx))
         assert result.dialogue_state == 'middleware_test'
+
+    @pytest.mark.asyncio
+    async def test_passing_app(self, dm):
+
+        app_received = None
+        async def _no_app(request, responder):
+            responder.act('no_app')
+
+        async def _app_pos(request, responder, app):
+            nonlocal app_received
+            app_received = app
+            responder.act('app_pos')
+
+        async def _app_kw(request, responder, *, app):
+            nonlocal app_received
+            app_received = app
+            responder.act('app_kw')
+
+        async def _var_kw(request, responder, **kwargs):
+            nonlocal app_received
+            app_received = app
+            responder.act('var_kw')
+
+        handlers = {
+            'no_app': _no_app,
+            'app_pos': _app_pos,
+            'app_kw': _app_kw,
+            'var_kw': _var_kw,
+        }
+
+        for name in handlers:
+            dm.add_dialogue_rule(name, handlers[name], intent=name)
+
+        for name in handlers:
+            request = create_request('domain', name)
+            responder = create_responder(request)
+            app = MagicMock(name=f'{name}_mock_app')
+            result = await dm.apply_handler(request, responder, app=app)
+
+            if name is 'no_app':
+                assert app_received is None
+            else:
+                assert app_received is not None
+
+            assert len(result.directives) == 1
+            assert result.directives[0]['name'] is name
+            # reset app received
+            app_received = None
 
 
 @pytest.mark.asyncio

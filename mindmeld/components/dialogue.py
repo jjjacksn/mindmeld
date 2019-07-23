@@ -13,11 +13,14 @@
 
 """This module contains the dialogue manager component of MindMeld"""
 import asyncio
-from functools import cmp_to_key, partial
 import copy
+from functools import cmp_to_key, partial
+import inspect
+import json
 import logging
 import random
-import json
+from typing import Mapping, Optional, Sequence
+
 import immutables
 
 from .. import path
@@ -312,12 +315,25 @@ class DialogueManager:
                     raise AssertionError('Only one default rule may be specified')
                 self.default_rule = rule
 
-    def apply_handler(self, request, responder, target_dialogue_state=None):
+    @staticmethod
+    def handler_accepts_app(handler) -> bool:
+        handler_sig = inspect.signature(handler)
+        if 'app' in handler_sig.parameters:
+            return True
+
+        for param in handler_sig.parameters.values():
+            if param.kind is inspect.Parameter.VAR_KEYWORD:
+                return True
+
+        return False
+
+    def apply_handler(self, request, responder, *, app=None, target_dialogue_state=None):
         """Applies the dialogue state handler for the most complex matching rule.
 
         Args:
             request (Request): The request object.
             responder (DialogueResponder): The responder object.
+            app (optional): Shared app information for consumption in the DM
             target_dialogue_state (str, optional): The target dialogue state.
 
         Returns:
@@ -325,19 +341,28 @@ class DialogueManager:
         """
         if self.async_mode:
             return self._apply_handler_async(
-                request, responder, target_dialogue_state=target_dialogue_state)
+                request, responder, app=app, target_dialogue_state=target_dialogue_state
+            )
         dialogue_state = self._get_dialogue_state(request, target_dialogue_state)
         handler = self._get_dialogue_handler(dialogue_state)
         responder.dialogue_state = dialogue_state
-        handler(request, responder)
+
+        if self.handler_accepts_app(handler):
+            handler(request, responder, app=app)
+        else:
+            handler(request, responder)
+
         return responder
 
-    async def _apply_handler_async(self, request, responder, target_dialogue_state=None):
+    async def _apply_handler_async(
+        self, request, responder, *, app=None, target_dialogue_state=None
+    ):
         """Applies the dialogue state handler for the most complex matching rule
 
         Args:
             request (Request): The request object from the DM
             responder (DialogueResponder): The responder from the DM
+            app (optional): Shared app information for consumption in the DM
             target_dialogue_state (str, optional): The target dialogue state
 
         Returns:
@@ -346,7 +371,11 @@ class DialogueManager:
         dialogue_state = self._get_dialogue_state(request, target_dialogue_state)
         handler = self._get_dialogue_handler(dialogue_state)
         responder.dialogue_state = dialogue_state
-        await handler(request, responder)
+        if self.handler_accepts_app(handler):
+            await handler(request, responder, app=app)
+        else:
+            await handler(request, responder)
+
         return responder
 
     def _get_dialogue_state(self, request, target_dialogue_state=None):
@@ -400,13 +429,17 @@ class DialogueFlow(DialogueManager):
     all_flows = {}
     """The dictionary that references all dialogue flows."""
 
-    def __init__(self, name, entrance_handler, app, **kwargs):
-        super().__init__(async_mode=app.async_mode)
+    def __init__(self, name, entrance_handler, app=None, dm=None, **kwargs):
+        parent = app if app else dm
+        if not parent:
+            raise ValueError('DialogueFlow requires either app or dm parameter')
+        super().__init__(async_mode=parent.async_mode)
 
         self._name = name
 
         self.all_flows[name] = self
         self.app = app
+        self._dm = dm
         self.exit_flow_states = []
 
         def _set_target_state(request, responder):
@@ -418,9 +451,9 @@ class DialogueFlow(DialogueManager):
             return await entrance_handler(request, responder)
 
         self._entrance_handler = _async_set_target_state if self.async_mode else _set_target_state
-        app.add_dialogue_rule(self.name, self._entrance_handler, **kwargs)
+        parent.add_dialogue_rule(self.name, self._entrance_handler, **kwargs)
         handler = self.apply_handler_async if self.async_mode else self.apply_handler
-        app.add_dialogue_rule(self.flow_state, handler, targeted_only=True)
+        parent.add_dialogue_rule(self.flow_state, handler, targeted_only=True)
 
     @property
     def name(self):
@@ -435,6 +468,8 @@ class DialogueFlow(DialogueManager):
     @property
     def dialogue_manager(self):
         """The dialogue manager which contains this flow."""
+        if self._dm:
+            return self._dm
         if self.app and self.app.app_manager:
             return self.app.app_manager.dialogue_manager
         return None
@@ -475,7 +510,7 @@ class DialogueFlow(DialogueManager):
 
         return _decorator
 
-    def apply_handler(self, request, responder=None):  # pylint: disable=arguments-differ
+    def apply_handler(self, request, responder=None, *, app=None):  # pylint: disable=arguments-differ
         """Applies the dialogue state handler for the dialogue flow and set the target dialogue
         state to the flow state.
 
@@ -493,10 +528,13 @@ class DialogueFlow(DialogueManager):
         if dialogue_state not in self.exit_flow_states:
             responder.params.target_dialogue_state = self.flow_state
 
-        handler(request, responder)
+        if self.handler_accepts_app(handler):
+            handler(request, responder, app=app)
+        else:
+            handler(request, responder)
         return {'dialogue_state': dialogue_state, 'directives': responder.directives}
 
-    async def apply_handler_async(self, request, responder):
+    async def apply_handler_async(self, request, responder, *, app=None):
         """Applies the dialogue state handler for the dialogue flow and sets the target dialogue
        state to the flow state asynchronously.
 
@@ -511,9 +549,15 @@ class DialogueFlow(DialogueManager):
         handler = self._get_dialogue_handler(dialogue_state)
         if dialogue_state not in self.exit_flow_states:
             responder.params.target_dialogue_state = self.flow_state
-        res = handler(request, responder)
+
+        res = None
+        if self.handler_accepts_app(handler):
+            res = handler(request, responder, app=app)
+        else:
+            res = handler(request, responder)
         if asyncio.iscoroutine(res):
             await res
+
         return {'dialogue_state': dialogue_state, 'directives': responder.directives}
 
     def _get_dialogue_handler(self, dialogue_state):

@@ -1,5 +1,10 @@
+from unittest.mock import MagicMock
+
 import pytest
 from mindmeld.components import Conversation
+from mindmeld.components.dialogue import DialogueFlow
+
+from .test_dialogue import create_request, create_responder
 
 
 def assert_reply(directives, templates, *, start_index=0, slots=None):
@@ -74,7 +79,7 @@ def assert_dialogue_state(dm, dialogue_state):
 
 def test_dialogue_flow_async(async_kwik_e_mart_app):
     @async_kwik_e_mart_app.dialogue_flow(domain='some_domain', intent='some_intent')
-    async def some_handler(context, responder):
+    async def some_handler(request, responder):
         pass
 
     assert some_handler.flow_state == 'some_handler_flow'
@@ -87,13 +92,13 @@ def test_dialogue_flow_async(async_kwik_e_mart_app):
     assert len(some_handler.rules) == 0
 
     @some_handler.handle(intent='some_intent')
-    async def some_flow_handler(context, responder):
+    async def some_flow_handler(request, responder):
         pass
 
     assert len(some_handler.rules) == 1
 
     @some_handler.handle(intent='some_intent_2', exit_flow=True)
-    async def some_flow_handler_2(context, responder):
+    async def some_flow_handler_2(request, responder):
         pass
 
     assert len(some_handler.rules) == 2
@@ -102,7 +107,7 @@ def test_dialogue_flow_async(async_kwik_e_mart_app):
 
 def test_dialogue_flow(kwik_e_mart_app):
     @kwik_e_mart_app.dialogue_flow(domain='some_domain', intent='some_intent')
-    def some_handler(context, responder):
+    def some_handler(request, responder):
         pass
 
     assert some_handler.flow_state == 'some_handler_flow'
@@ -115,14 +120,72 @@ def test_dialogue_flow(kwik_e_mart_app):
     assert len(some_handler.rules) == 0
 
     @some_handler.handle(intent='some_intent')
-    def some_flow_handler(context, responder):
+    def some_flow_handler(request, responder):
         pass
 
     assert len(some_handler.rules) == 1
 
     @some_handler.handle(intent='some_intent_2', exit_flow=True)
-    def some_flow_handler_2(context, responder):
+    def some_flow_handler_2(request, responder):
         pass
 
     assert len(some_handler.rules) == 2
     assert 'some_flow_handler_2' in some_handler.exit_flow_states
+
+
+def test_dialogue_flow_app_param(dm):
+
+    def the_flow(request, responder):
+        pass
+
+    the_flow = DialogueFlow('the_flow', the_flow, dm=dm, intent='the_flow')
+
+    flow_dm = the_flow.dialogue_manager
+    assert_dialogue_state(flow_dm, 'the_flow')
+    assert_dialogue_state(flow_dm, 'the_flow_flow')
+
+    assert len(the_flow.rules) == 0
+
+    app_received = None
+    @the_flow.handle(intent='no_app')
+    def _no_app(request, responder):
+        responder.act('no_app')
+
+    @the_flow.handle(intent='app_pos')
+    def _app_pos(request, responder, app):
+        nonlocal app_received
+        app_received = app
+        responder.act('app_pos')
+
+    @the_flow.handle(intent='app_kw')
+    def _app_kw(request, responder, *, app):
+        nonlocal app_received
+        app_received = app
+        responder.act('app_kw')
+
+    @the_flow.handle(intent='var_kw')
+    def _var_kw(request, responder, **kwargs):
+        nonlocal app_received
+        app_received = app
+        responder.act('var_kw')
+
+    states = ['no_app', 'app_pos', 'app_kw', 'var_kw']
+
+    for state in states:
+        request = create_request('domain', state)
+        responder = create_responder(request)
+        app = MagicMock(name=f'{state}_mock_app')
+
+        result = dm.apply_handler(
+            request, responder, app=app, target_dialogue_state=the_flow.flow_state
+        )
+
+        if state is 'no_app':
+            assert app_received is None
+        else:
+            assert app_received is not None
+
+        assert len(result.directives) == 1
+        assert result.directives[0]['name'] is state
+        # reset app received
+        app_received = None
